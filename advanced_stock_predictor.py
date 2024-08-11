@@ -64,10 +64,10 @@ def train_model(model, train_loader, num_epochs):
         if (epoch+1) % 10 == 0:
             print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader):.4f}')
 
-def predict(model, data, seq_length, future_days, scaler, last_day_price):
+def predict(model, data, seq_length, future_days, scaler):
     model.eval()
     last_sequence = torch.FloatTensor(scaler.transform(data[-seq_length:].values)).unsqueeze(0).to(device)
-    predictions = [last_day_price]  # Start with the last actual price
+    predictions = []
     
     with torch.no_grad():
         for _ in range(future_days):
@@ -93,7 +93,7 @@ def plot_predictions(historical_data, predictions, symbols, prediction_start_dat
                                  line=dict(color=colors[i])), row=1, col=1)
         
         # Predictions
-        pred_dates = pd.date_range(start=prediction_start_date - timedelta(days=1), periods=len(predictions))
+        pred_dates = pd.date_range(start=prediction_start_date, periods=len(predictions))
         fig.add_trace(go.Scatter(x=pred_dates, y=predictions[:, i],
                                  mode='lines', name=f'{symbol} Predicted',
                                  line=dict(color=colors[i], dash='dash')), row=1, col=1)
@@ -147,12 +147,11 @@ def main():
         train_model(model, train_loader, num_epochs=100)
 
         print("Making predictions...")
-        last_day_price = data.iloc[-1].values
-        predictions = predict(model, data, seq_length, prediction_days, scaler, last_day_price)
+        predictions = predict(model, data, seq_length, prediction_days, scaler)
 
         print(f"\nPredicted Percent Changes from {prediction_start_date.strftime('%Y-%m-%d')} to {(prediction_start_date + timedelta(days=prediction_days-1)).strftime('%Y-%m-%d')}:")
         for i, symbol in enumerate(symbols):
-            start_price = predictions[1, i]  # Use the first prediction (August 1) as the start price
+            start_price = predictions[0, i]  # First prediction is for August 1
             end_price = predictions[-1, i]
             percent_change = ((end_price - start_price) / start_price) * 100
             print(f"{symbol}: {percent_change:.2f}% (${start_price:.2f} to ${end_price:.2f})")
