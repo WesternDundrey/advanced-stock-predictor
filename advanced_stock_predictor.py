@@ -64,19 +64,20 @@ def train_model(model, train_loader, num_epochs):
         if (epoch+1) % 10 == 0:
             print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader):.4f}')
 
-def predict(model, data, seq_length, future_days, scaler):
+def predict(model, data, seq_length, future_days, scaler, last_day_price):
     model.eval()
-    last_sequence = torch.FloatTensor(data[-seq_length:]).unsqueeze(0).to(device)
-    predictions = []
+    last_sequence = torch.FloatTensor(scaler.transform(data[-seq_length:].values)).unsqueeze(0).to(device)
+    predictions = [last_day_price]  # Start with the last actual price
     
     with torch.no_grad():
         for _ in range(future_days):
             prediction = model(last_sequence)
-            predictions.append(prediction.cpu().numpy())
-            last_sequence = torch.cat((last_sequence[:, 1:, :], prediction.unsqueeze(1)), dim=1)
+            pred_price = scaler.inverse_transform(prediction.cpu().numpy())[0]
+            predictions.append(pred_price)
+            new_seq = torch.cat((last_sequence[:, 1:, :], prediction.unsqueeze(1)), dim=1)
+            last_sequence = new_seq
     
-    predictions = np.array(predictions).squeeze()
-    return scaler.inverse_transform(predictions)
+    return np.array(predictions)
 
 def plot_predictions(historical_data, predictions, symbols, prediction_start_date):
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
@@ -92,7 +93,7 @@ def plot_predictions(historical_data, predictions, symbols, prediction_start_dat
                                  line=dict(color=colors[i])), row=1, col=1)
         
         # Predictions
-        pred_dates = pd.date_range(start=prediction_start_date, periods=len(predictions))
+        pred_dates = pd.date_range(start=prediction_start_date - timedelta(days=1), periods=len(predictions))
         fig.add_trace(go.Scatter(x=pred_dates, y=predictions[:, i],
                                  mode='lines', name=f'{symbol} Predicted',
                                  line=dict(color=colors[i], dash='dash')), row=1, col=1)
@@ -125,6 +126,9 @@ def main():
             raise ValueError("No data was fetched. Please check your internet connection and try again.")
         print(f"Successfully fetched data for {', '.join(data.columns)}")
         
+        # Ensure the order of columns matches the order of symbols
+        data = data[symbols]
+        
         print("Preparing data for model...")
         x, y, scaler = prepare_data(data, seq_length)
 
@@ -143,11 +147,12 @@ def main():
         train_model(model, train_loader, num_epochs=100)
 
         print("Making predictions...")
-        predictions = predict(model, scaler.transform(data), seq_length, prediction_days, scaler)
+        last_day_price = data.iloc[-1].values
+        predictions = predict(model, data, seq_length, prediction_days, scaler, last_day_price)
 
         print(f"\nPredicted Percent Changes from {prediction_start_date.strftime('%Y-%m-%d')} to {(prediction_start_date + timedelta(days=prediction_days-1)).strftime('%Y-%m-%d')}:")
         for i, symbol in enumerate(symbols):
-            start_price = predictions[0, i]
+            start_price = predictions[1, i]  # Use the first prediction (August 1) as the start price
             end_price = predictions[-1, i]
             percent_change = ((end_price - start_price) / start_price) * 100
             print(f"{symbol}: {percent_change:.2f}% (${start_price:.2f} to ${end_price:.2f})")
