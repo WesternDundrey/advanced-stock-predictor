@@ -15,8 +15,8 @@ print(f"Using device: {device}")
 class QuantumInspiredLayer(nn.Module):
     def __init__(self, input_size, output_size):
         super(QuantumInspiredLayer, self).__init__()
-        self.theta = nn.Parameter(torch.randn(input_size, output_size, dtype=torch.float32) * 0.01)
-        self.phi = nn.Parameter(torch.randn(input_size, output_size, dtype=torch.float32) * 0.01)
+        self.theta = nn.Parameter(torch.randn(input_size, output_size, dtype=torch.float32) * 0.02)
+        self.phi = nn.Parameter(torch.randn(input_size, output_size, dtype=torch.float32) * 0.02)
 
     def forward(self, x):
         theta_noise = torch.randn_like(self.theta) * 0.01
@@ -27,31 +27,33 @@ class QuantumInspiredLayer(nn.Module):
         output = torch.sum(x_complex * psi, dim=2)
         return torch.abs(output)
 
-class QuantumInspiredLSTM(nn.Module):
+class EnhancedQuantumInspiredLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size):
-        super(QuantumInspiredLSTM, self).__init__()
+        super(EnhancedQuantumInspiredLSTM, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
         self.quantum_layer = QuantumInspiredLayer(input_size, hidden_size)
         self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.fc1 = nn.Linear(hidden_size, hidden_size)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(0.2)
 
     def forward(self, x):
         x = self.quantum_layer(x)
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
         out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
+        out = self.fc1(out[:, -1, :])
+        out = self.relu(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
         return out
 
 def get_stock_data(symbols, start_date, end_date):
     data = yf.download(symbols, start=start_date, end=end_date)['Adj Close']
-    data = data[symbols].dropna()
-    print("Data shape:", data.shape)
-    print("Data head:\n", data.head())
-    print("Data tail:\n", data.tail())
-    return data
+    return data[symbols].dropna()
 
 def prepare_data(data, seq_length):
     scaler = MinMaxScaler(feature_range=(0, 1))
@@ -62,15 +64,14 @@ def prepare_data(data, seq_length):
         x.append(scaled_data[i:i+seq_length])
         y.append(scaled_data[i+seq_length])
     
-    x = torch.FloatTensor(np.array(x)).to(device)
-    y = torch.FloatTensor(np.array(y)).to(device)
-    
-    print("X shape:", x.shape, "Y shape:", y.shape)
-    return x, y, scaler
+    return (torch.FloatTensor(np.array(x)).to(device),
+            torch.FloatTensor(np.array(y)).to(device),
+            scaler)
 
 def train_model(model, train_loader, num_epochs):
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     
     for epoch in range(num_epochs):
         model.train()
@@ -84,8 +85,11 @@ def train_model(model, train_loader, num_epochs):
             optimizer.step()
             total_loss += loss.item()
         
+        avg_loss = total_loss / len(train_loader)
+        scheduler.step(avg_loss)
+        
         if (epoch+1) % 10 == 0:
-            print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss/len(train_loader):.4f}')
+            print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
 
 def predict(model, data, seq_length, future_days, scaler):
     model.eval()
@@ -96,12 +100,14 @@ def predict(model, data, seq_length, future_days, scaler):
         for _ in range(future_days):
             prediction = model(last_sequence)
             pred_price = scaler.inverse_transform(prediction.cpu().numpy())[0]
-            predictions.append(pred_price)
             
-            # Prepare the next sequence
-            next_input = scaler.transform(pred_price.reshape(1, -1))
-            next_input_tensor = torch.FloatTensor(next_input).unsqueeze(1).to(device)
-            last_sequence = torch.cat((last_sequence[:, 1:, :], next_input_tensor), dim=1)
+            # Add volatility to prediction
+            volatility = np.std(data.values[-30:], axis=0) * 0.1  # 10% of recent volatility
+            pred_price += np.random.normal(0, volatility)
+            
+            predictions.append(pred_price)
+            new_pred = torch.FloatTensor(scaler.transform([pred_price])).unsqueeze(0).to(device)
+            last_sequence = torch.cat((last_sequence[:, 1:, :], new_pred), dim=1)
     
     return pd.DataFrame(predictions, index=pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=future_days, freq='D'), columns=data.columns)
 
@@ -112,9 +118,12 @@ def plot_predictions(historical_data, predictions, symbols):
 
     colors = ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'pink', 'gray']
     
+    # Filter historical data for 2024 only
+    historical_data_2024 = historical_data.loc['2024-01-01':]
+    
     for i, symbol in enumerate(symbols):
-        # Historical data
-        fig.add_trace(go.Scatter(x=historical_data.index, y=historical_data[symbol],
+        # Historical data (2024 only)
+        fig.add_trace(go.Scatter(x=historical_data_2024.index, y=historical_data_2024[symbol],
                                  mode='lines', name=f'{symbol} Historical',
                                  line=dict(color=colors[i])), row=1, col=1)
         
@@ -123,14 +132,14 @@ def plot_predictions(historical_data, predictions, symbols):
                                  mode='lines', name=f'{symbol} Predicted',
                                  line=dict(color=colors[i], dash='dash')), row=1, col=1)
         
-        # Relative performance
-        combined_data = pd.concat([historical_data[symbol], predictions[symbol]])
+        # Relative performance (2024 only)
+        combined_data = pd.concat([historical_data_2024[symbol], predictions[symbol]])
         rel_perf = (combined_data / combined_data.iloc[0] - 1) * 100
         fig.add_trace(go.Scatter(x=combined_data.index, y=rel_perf,
                                  mode='lines', name=f'{symbol} Performance',
                                  line=dict(color=colors[i])), row=2, col=1)
 
-    fig.update_layout(height=800, title_text="Stock Price Predictions and Relative Performance")
+    fig.update_layout(height=800, title_text="Stock Price Predictions and Relative Performance (2024)")
     fig.update_xaxes(title_text="Date", row=2, col=1)
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="% Change", row=2, col=1)
@@ -154,18 +163,18 @@ def main():
         print("Preparing data for model...")
         x, y, scaler = prepare_data(data, seq_length)
 
-        print("Creating and training quantum-inspired LSTM model...")
+        print("Creating and training enhanced quantum-inspired LSTM model...")
         input_size = len(symbols)
-        hidden_size = 64
-        num_layers = 2
+        hidden_size = 128
+        num_layers = 3
         output_size = len(symbols)
         
-        model = QuantumInspiredLSTM(input_size, hidden_size, num_layers, output_size).to(device)
+        model = EnhancedQuantumInspiredLSTM(input_size, hidden_size, num_layers, output_size).to(device)
         
         train_dataset = TensorDataset(x, y)
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 
-        train_model(model, train_loader, num_epochs=100)
+        train_model(model, train_loader, num_epochs=100)  # Changed to 100 epochs
 
         print("Making predictions...")
         predictions = predict(model, data, seq_length, prediction_days, scaler)
