@@ -118,11 +118,10 @@ def plot_predictions(historical_data, predictions, symbols):
 
     colors = ['blue', 'red', 'green', 'purple', 'orange', 'brown', 'pink', 'gray']
     
-    # Filter historical data for 2024 only
+    
     historical_data_2024 = historical_data.loc['2024-01-01':]
     
     for i, symbol in enumerate(symbols):
-        # Historical data (2024 only)
         fig.add_trace(go.Scatter(x=historical_data_2024.index, y=historical_data_2024[symbol],
                                  mode='lines', name=f'{symbol} Historical',
                                  line=dict(color=colors[i])), row=1, col=1)
